@@ -1,0 +1,7 @@
+{
+  "DB_HOST": "127.0.0.1",
+  "DB_PORT": 7586,
+  "DB_NAME": "hidraufer",
+  "DB_USER": "postgres",
+  "DB_PASS": "teste55"
+}

@@ -1,4 +1,10 @@
 {
     "automacao_ligada": false,
-    "cliente_padrao": ""
+    "cliente_padrao": "",
+    "schema_tintometrico": "tintometrico",
+    "DB_HOST": "127.0.0.1",
+    "DB_PORT": 7586,
+    "DB_NAME": "casetech",
+    "DB_USER": "postgres",
+    "DB_PASS": "teste55"
 }

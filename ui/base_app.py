@@ -12,6 +12,7 @@ from ui.mixins_produto import ProdutoAddFlowMixin
 from ui.mixins_operacoes import OperacoesMixin
 from settings import load_db_settings, save_db_settings
 from resources import resource_path
+from ui.mixins_pedido import PedidoTintasMixin
 
 
 class App(
@@ -20,11 +21,9 @@ class App(
     TreeItensMixin,
     ProdutoAddFlowMixin,
     OperacoesMixin,
+    PedidoTintasMixin,
 ):
-    """
-    Arquivo "limpo": só monta a UI (layout) e junta os mixins.
-    As regras/ações ficam nos mixins.
-    """
+
 
     def __init__(self):
         super().__init__(themename="flatly")

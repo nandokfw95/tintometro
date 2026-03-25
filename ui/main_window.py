@@ -3,13 +3,14 @@ import json
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 from tkinter import filedialog, messagebox
+from ui.mixins_pedido import PedidoTintasMixin
 
 from ui.base_app import App  # sua tela atual
 
 CONFIG_APP_FILE = "app_settings.json"
 
 
-class MainWindow(tb.Window):
+class MainWindow(tb.Window, PedidoTintasMixin):
 
     def __init__(self):
         super().__init__(themename="flatly")
@@ -47,18 +48,18 @@ class MainWindow(tb.Window):
 
         tb.Button(
             container,
+            text="🔄 Criar Pedido",
+            width=30,
+            bootstyle=SUCCESS,
+            command=self.abrir_tela_pedido
+        ).pack(pady=10)
+        
+        tb.Button(
+            container,
             text="🔄 Transformar",
             width=30,
             bootstyle=SUCCESS,
             command=self.abrir_transformar
-        ).pack(pady=10)
-
-        tb.Button(
-            container,
-            text="📂 Caminho Pasta",
-            width=30,
-            bootstyle=PRIMARY,
-            command=self.configurar_pasta
         ).pack(pady=10)
 
         tb.Button(
@@ -158,9 +159,11 @@ class MainWindow(tb.Window):
         messagebox.showinfo("OK", f"Pasta salva:\n{pasta}")
 
     def configurar_padrao(self):
+        from ui.config_padrao_schema import criar_schema_tabelas_fks, abrir_tela_importacao
+
         win = tb.Toplevel(self)
         win.title("Configuração Padrão")
-        self.centralizar_janela(win, 360, 220)
+        self.centralizar_janela(win, 420, 320)
         win.grab_set()
 
         frm = tb.Frame(win, padding=20)
@@ -169,17 +172,42 @@ class MainWindow(tb.Window):
         cfg = self._load_config()
 
         cliente_var = tb.StringVar(value=cfg.get("cliente_padrao", ""))
+        schema_var = tb.StringVar(value=cfg.get("schema_tintometrico", "tintometrico"))
 
         tb.Label(frm, text="Cliente padrão:").pack(anchor="w")
-        tb.Entry(frm, textvariable=cliente_var).pack(fill=X, pady=10)
+        tb.Entry(frm, textvariable=cliente_var).pack(fill=X, pady=(6, 12))
+
+        tb.Label(frm, text="Schema para Tabelas (Firebird → Postgres):").pack(anchor="w")
+        tb.Entry(frm, textvariable=schema_var).pack(fill=X, pady=(6, 10))
+
+        tb.Separator(frm).pack(fill=X, pady=12)
 
         def salvar():
             cfg["cliente_padrao"] = cliente_var.get()
+            cfg["schema_tintometrico"] = schema_var.get().strip() or "tintometrico"
             self._save_config(cfg)
             messagebox.showinfo("OK", "Configuração salva.")
-            win.destroy()
 
-        tb.Button(frm, text="Salvar", bootstyle=SUCCESS, command=salvar).pack(pady=15)
+        def criar_e_importar():
+            schema = schema_var.get().strip() or "tintometrico"
+            cfg["schema_tintometrico"] = schema
+            self._save_config(cfg)
+
+            if not messagebox.askyesno("Confirmar", f"Criar schema/tabelas/FKs e importar Excels?\n\nSchema: {schema}"):
+                return
+
+            try:
+                criar_schema_tabelas_fks(schema)
+                messagebox.showinfo("OK", "Schema + tabelas + FKs criados!")
+                abrir_tela_importacao(self, schema)
+            except Exception as e:
+                messagebox.showerror("Erro", f"Falha:\n{e}")
+
+        btns = tb.Frame(frm)
+        btns.pack(fill=X, pady=(8, 0))
+
+        tb.Button(btns, text="Salvar", bootstyle=SUCCESS, command=salvar).pack(side=LEFT)
+        tb.Button(btns, text="Criar e Importar Excels", bootstyle=INFO, command=criar_e_importar).pack(side=RIGHT)
 
     def configurar_banco(self):
         win = tb.Toplevel(self)

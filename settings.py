@@ -7,7 +7,7 @@ SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "db_config.json")
 DEFAULT_DB = {
     "DB_HOST": "127.0.0.1",
     "DB_PORT": 7586,
-    "DB_NAME": "hidraufer",
+    "DB_NAME": "casetech",
     "DB_USER": "postgres",
     "DB_PASS": "teste55",
 }

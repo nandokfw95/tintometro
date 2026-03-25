@@ -1,4 +1,3 @@
-# db.py
 import re
 import psycopg2
 from settings import load_db_settings
@@ -11,7 +10,8 @@ def conectar_db():
         port=cfg["DB_PORT"],
         dbname=cfg["DB_NAME"],
         user=cfg["DB_USER"],
-        password=cfg["DB_PASS"]
+        password=cfg["DB_PASS"],
+        options="-c client_encoding=UTF8"
     )
 
 
@@ -462,3 +462,154 @@ def criar_produto_copiando(
         except Exception:
             conn.rollback()
             raise
+        
+def listar_cores_tintometrico(termo: str = "", limit: int = 50):
+    """
+    Retorna cod_cor, nome_cor.
+    """
+    termo = (termo or "").strip()
+    sql = """
+        SELECT ic.cod_cor, ic.nome_cor
+        FROM tintometrico.tintometricocor ic
+        WHERE (%s = '' OR ic.cod_cor ILIKE %s OR ic.nome_cor ILIKE %s)
+        ORDER BY ic.cod_cor
+        LIMIT %s;
+    """
+    like = f"%{termo}%"
+    with conectar_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (termo, like, like, limit))
+            return cur.fetchall()
+
+
+def listar_opcoes_por_cor(cod_cor: str):
+    """
+    Dado um COD_COR, retorna apenas opções que EXISTEM na fórmula:
+      embalagens: list[tuple(id_embalagem, embalagem, capacidade)]
+      produtos:   list[tuple(id_produto, produto)]
+      nome_cor:   str | None
+    """
+    cod_cor = (cod_cor or "").strip()
+    if not cod_cor:
+        return [], [], None
+
+    sql = """
+        SELECT
+            i.id_embalagem,
+            ie.embalagem,
+            ie.capacidade,
+            ip.id_produto,
+            ip.produto,
+            ic.nome_cor
+        FROM tintometrico.tintometricoformula i
+        JOIN tintometrico.tintometricoembalagem ie
+            ON ie.id_embalagem = i.id_embalagem
+        JOIN tintometrico.tintometricocor ic
+            ON ic.id_cor = i.id_cor
+        JOIN tintometrico.tintometricoproduto ip
+            ON ip.id_produto = ic.id_produto
+        WHERE ic.cod_cor = %s
+        ORDER BY ie.capacidade, ie.embalagem, ip.produto;
+    """
+
+    with conectar_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (cod_cor,))
+            rows = cur.fetchall()
+
+    if not rows:
+        return [], [], None
+
+    nome_cor = rows[0][5]
+
+    embalagens = []
+    produtos = []
+
+    emb_vistos = set()
+    prod_vistos = set()
+
+    for id_emb, emb, capacidade, id_prod, produto, _nome_cor in rows:
+        if id_emb not in emb_vistos:
+            embalagens.append((id_emb, emb, capacidade))
+            emb_vistos.add(id_emb)
+
+        if id_prod not in prod_vistos:
+            produtos.append((id_prod, produto))
+            prod_vistos.add(id_prod)
+
+    return embalagens, produtos, nome_cor
+
+
+def buscar_formula_por_filtros(cod_cor: str, id_embalagem: int, id_produto: int):
+    """
+    Retorna:
+      header: dict(produto, embalagem, capacidade, cod_cor, nome_cor)
+      linhas: list[dict(corante, mls)]
+    """
+    cod_cor = (cod_cor or "").strip()
+    sql = """
+        SELECT
+            i.id_cor,
+            i.id_embalagem,
+            i.corante,
+            ie.embalagem,
+            ie.capacidade,
+            ip.produto,
+            ic.cod_cor,
+            ic.nome_cor,
+            i.mls
+        FROM tintometrico.tintometricoformula i
+        LEFT JOIN tintometrico.tintometricoembalagem ie ON ie.id_embalagem = i.id_embalagem
+        LEFT JOIN tintometrico.tintometricocor ic ON ic.id_cor = i.id_cor
+        LEFT JOIN tintometrico.tintometricoproduto ip ON ip.id_produto = ic.id_produto
+        WHERE ic.cod_cor = %s
+          AND i.id_embalagem = %s
+          AND ip.id_produto = %s
+        ORDER BY i.corante;
+    """
+    with conectar_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (cod_cor, int(id_embalagem), int(id_produto)))
+            rows = cur.fetchall()
+
+    if not rows:
+        return None, []
+
+    # header vem “igual” em todas as linhas
+    first = rows[0]
+    header = {
+        "produto": first[5],
+        "embalagem": first[3],
+        "capacidade": first[4],
+        "cod_cor": first[6],
+        "nome_cor": first[7],
+    }
+
+    linhas = [{"corante": r[2], "mls": r[8]} for r in rows]
+    return header, linhas
+def listar_produtos_por_cor_embalagem(cod_cor: str, id_embalagem: int):
+    """
+    Retorna apenas produtos que possuem fórmula para a cor + embalagem selecionadas.
+    """
+    cod_cor = (cod_cor or "").strip()
+    if not cod_cor or not id_embalagem:
+        return []
+
+    sql = """
+        SELECT DISTINCT
+            ip.id_produto,
+            ip.produto
+        FROM tintometrico.tintometricoformula i
+        JOIN tintometrico.tintometricocor ic
+            ON ic.id_cor = i.id_cor
+        JOIN tintometrico.tintometricoproduto ip
+            ON ip.id_produto = ic.id_produto
+        WHERE ic.cod_cor = %s
+          AND i.id_embalagem = %s
+        ORDER BY ip.produto;
+    """
+
+    with conectar_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (cod_cor, int(id_embalagem)))
+            return cur.fetchall()

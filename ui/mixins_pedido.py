@@ -42,7 +42,7 @@ class PedidoTintasMixin:
     def abrir_tela_pedido(self):
         win = tb.Toplevel(self)
         win.title("Criar Pedido • Tintométrico")
-        win.geometry("1380x760")
+        win.state("zoomed")
         win.transient(self)
         win.grab_set()
 
@@ -132,29 +132,30 @@ class PedidoTintasMixin:
 
         sugest_visivel = {"on": False}
 
-                # =========================================================
+        # =========================================================
         # CONTEÚDO CENTRAL
         # =========================================================
         conteudo_box = tb.Frame(root)
         conteudo_box.pack(fill=BOTH, expand=True, pady=(0, 10))
 
-        conteudo_box.columnconfigure(0, weight=3)
-        conteudo_box.columnconfigure(1, weight=2)
-        conteudo_box.rowconfigure(0, weight=1)
+        # 1 coluna / 2 linhas
+        conteudo_box.columnconfigure(0, weight=1)
+        conteudo_box.rowconfigure(0, weight=5)   # tabela maior
+        conteudo_box.rowconfigure(1, weight=2)   # previews embaixo
 
         pedido_box = tb.Labelframe(
             conteudo_box,
             text="Tintas adicionadas ao pedido",
             padding=10,
         )
-        pedido_box.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        pedido_box.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
 
         preview_frame = tb.Labelframe(
             conteudo_box,
             text="Preview da cor",
             padding=8,
         )
-        preview_frame.grid(row=0, column=1, sticky="nsew")
+        preview_frame.grid(row=1, column=0, sticky="nsew")
 
         lbl_preview_titulo = tb.Label(
             preview_frame,
@@ -163,19 +164,21 @@ class PedidoTintasMixin:
         )
         lbl_preview_titulo.pack(anchor=W, pady=(0, 6))
 
-        # =========================================================
-        # PREVIEWS UM EMBAIXO DO OUTRO
-        # =========================================================
         previews_box = tb.Frame(preview_frame)
         previews_box.pack(fill=BOTH, expand=True)
+
+        # lado a lado no bloco inferior
+        previews_box.columnconfigure(0, weight=1)
+        previews_box.columnconfigure(1, weight=2)
+        previews_box.rowconfigure(0, weight=1)
 
         # -------------------------
         # BOX PREVIEW COR
         # -------------------------
         box_cor = tb.Labelframe(previews_box, text="Cor", padding=6)
-        box_cor.pack(fill=X, pady=(0, 8))
-        box_cor.configure(width=420, height=180)
-        box_cor.pack_propagate(False)
+        box_cor.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        box_cor.configure(height=230)
+        box_cor.grid_propagate(False)
 
         lbl_preview = tb.Label(box_cor, anchor="center")
         lbl_preview.pack(fill=BOTH, expand=True)
@@ -184,9 +187,9 @@ class PedidoTintasMixin:
         # BOX PREVIEW AMBIENTE
         # -------------------------
         box_amb = tb.Labelframe(previews_box, text="Ambiente", padding=6)
-        box_amb.pack(fill=BOTH, expand=True)
-        box_amb.configure(width=420, height=280)
-        box_amb.pack_propagate(False)
+        box_amb.grid(row=0, column=1, sticky="nsew")
+        box_amb.configure(height=230)
+        box_amb.grid_propagate(False)
 
         lbl_preview_amb = tb.Label(box_amb, anchor="center")
         lbl_preview_amb.pack(fill=BOTH, expand=True)
@@ -369,7 +372,6 @@ class PedidoTintasMixin:
         def _gerar_preview_ambiente(cod_cor=None, nome_cor=None):
             try:
                 caminho_cor = _buscar_arquivo_preview(cod_cor=cod_cor, nome_cor=nome_cor)
-
                 hexa = _buscar_hex_cor(cod_cor=cod_cor, nome_cor=nome_cor)
 
                 nome_arquivo = _normalizar_nome_arquivo(f"{cod_cor}_{nome_cor}") + ".png"
@@ -418,14 +420,14 @@ class PedidoTintasMixin:
             ok_cor = _carregar_imagem_em_label(
                 lbl_preview,
                 caminho_cor,
-                (390, 130),
+                (320, 180),
                 "Sem preview\nda cor",
             )
 
             ok_amb = _carregar_imagem_em_label(
                 lbl_preview_amb,
                 caminho_amb,
-                (390, 230),
+                (750, 240),
                 "Sem preview\nde ambiente",
             )
 
@@ -441,13 +443,13 @@ class PedidoTintasMixin:
             _carregar_imagem_em_label(
                 lbl_preview,
                 None,
-                (390, 130),
+                (320, 180),
                 "Selecione uma cor",
             )
             _carregar_imagem_em_label(
                 lbl_preview_amb,
                 None,
-                (390, 230),
+                (750, 240),
                 "Ambiente",
             )
             lbl_preview_titulo.config(text="Nenhuma cor selecionada")
@@ -586,18 +588,10 @@ class PedidoTintasMixin:
             mostrar_preview(cod_cor=cod, nome_cor=nome)
 
         def _extrair_cod_cor_do_arquivo_preview(arq: Path):
-            """
-            Converte nome do arquivo em COD_COR.
-            Ex:
-              00YR_26_490.png -> 00YR 26/490
-              0001.png        -> 0001
-            """
             stem = arq.stem.strip().upper()
-
             m = re.match(r"^(\d{2}[A-Z]{2})_(\d{2})_(\d{3})$", stem)
             if m:
                 return f"{m.group(1)} {m.group(2)}/{m.group(3)}"
-
             return stem.replace("__", "_").replace("_", " ").strip()
 
         def _cod_cor_valido(cod: str) -> bool:
@@ -618,8 +612,6 @@ class PedidoTintasMixin:
                     continue
 
                 cod = _extrair_cod_cor_do_arquivo_preview(arq)
-
-                # mantém só códigos tintométricos válidos
                 if not _cod_cor_valido(cod):
                     continue
 
@@ -630,7 +622,7 @@ class PedidoTintasMixin:
                 return cod
 
             return sorted(arquivos, key=_ord_key)
-        
+
         def abrir_paleta_cores():
             dados = _dados_paleta()
             if not dados:
@@ -827,19 +819,6 @@ class PedidoTintasMixin:
 
             renderizar_paleta()
             ent_busca_paleta.focus_set()
-        
-        def _extrair_cod_cor_do_arquivo_preview(arq: Path):
-            stem = arq.stem.strip().upper()
-
-            m = re.match(r"^(\d{2}[A-Z]{2})_(\d{2})_(\d{3})$", stem)
-            if m:
-                return f"{m.group(1)} {m.group(2)}/{m.group(3)}"
-
-            return stem.replace("_", " ").strip()
-
-        def _cod_cor_valido(cod: str) -> bool:
-            cod = (cod or "").strip().upper()
-            return bool(re.match(r"^\d{2}[A-Z]{2}\s+\d{2}/\d{3}$", cod))
 
         def _listar_arquivos_preview_validos():
             if not PASTA_PREVIEW.exists():
@@ -895,10 +874,6 @@ class PedidoTintasMixin:
                     "v": v,
                 })
 
-            # ordena parecido com catálogo:
-            # 1) matiz
-            # 2) mais claros primeiro
-            # 3) mais saturados primeiro
             dados.sort(key=lambda x: (x["h"], -x["v"], -x["s"], x["cod"]))
             return dados
 

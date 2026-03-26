@@ -3,9 +3,25 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Tuple
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageFilter
 
 
+# =========================================================
+# CONFIGURAÇÃO DE ASSETS
+# =========================================================
+BASE_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = BASE_DIR / "assets" / "ambiente"
+
+ASSET_BASE = ASSETS_DIR / "base.png"
+ASSET_SOFA = ASSETS_DIR / "sofa.png"
+ASSET_MESA = ASSETS_DIR / "mesa.png"
+ASSET_PLANTA = ASSETS_DIR / "planta.png"
+ASSET_QUADRO = ASSETS_DIR / "quadro.png"
+ASSET_LUMINARIA = ASSETS_DIR / "luminaria.png"
+
+# =========================================================
+# HELPERS GERAIS
+# =========================================================
 def _hex_to_rgb(color: str) -> Tuple[int, int, int]:
     color = str(color or "").strip().lstrip("#")
     if len(color) != 6:
@@ -20,297 +36,215 @@ def _clamp(v: float) -> int:
     return max(0, min(255, int(v)))
 
 
-def _blend_rgb(a: Tuple[int, int, int], b: Tuple[int, int, int], t: float) -> Tuple[int, int, int]:
-    return tuple(_clamp(a[i] * (1 - t) + b[i] * t) for i in range(3))
+def _safe_open_rgba(path: str | Path) -> Image.Image | None:
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        return Image.open(p).convert("RGBA")
+    except Exception:
+        return None
 
 
+def _resize_asset(img: Image.Image | None, scale: float) -> Image.Image | None:
+    if img is None:
+        return None
+    w, h = img.size
+    nw = max(1, int(w * scale))
+    nh = max(1, int(h * scale))
+    return img.resize((nw, nh), Image.LANCZOS)
+
+
+def _alpha_bbox(img: Image.Image) -> tuple[int, int, int, int] | None:
+    alpha = img.getchannel("A")
+    return alpha.getbbox()
+
+
+def _crop_to_alpha(img: Image.Image | None, padding: int = 0) -> Image.Image | None:
+    if img is None:
+        return None
+
+    bbox = _alpha_bbox(img)
+    if not bbox:
+        return img
+
+    x1, y1, x2, y2 = bbox
+    x1 = max(0, x1 - padding)
+    y1 = max(0, y1 - padding)
+    x2 = min(img.width, x2 + padding)
+    y2 = min(img.height, y2 + padding)
+    return img.crop((x1, y1, x2, y2))
+
+
+def _make_shadow_from_alpha(
+    img: Image.Image,
+    blur: int = 18,
+    opacity: int = 90,
+    expand: int = 60,
+) -> Image.Image:
+    """
+    Cria uma sombra usando o alpha do PNG.
+    """
+    alpha = img.getchannel("A")
+
+    shadow_alpha = Image.new(
+        "L",
+        (img.width + expand * 2, img.height + expand * 2),
+        0,
+    )
+    shadow_alpha.paste(alpha, (expand, expand))
+    shadow_alpha = shadow_alpha.filter(ImageFilter.GaussianBlur(blur))
+    shadow_alpha = shadow_alpha.point(lambda p: int(p * (opacity / 255.0)))
+
+    shadow = Image.new("RGBA", shadow_alpha.size, (0, 0, 0, 0))
+    shadow.putalpha(shadow_alpha)
+    return shadow
+
+
+def _paste_centered(
+    canvas: Image.Image,
+    obj: Image.Image,
+    center_x: int,
+    baseline_y: int,
+) -> tuple[int, int]:
+    """
+    Cola o objeto centralizado horizontalmente, usando a base inferior como referência.
+    """
+    x = int(center_x - obj.width / 2)
+    y = int(baseline_y - obj.height)
+    canvas.alpha_composite(obj, (x, y))
+    return x, y
+
+
+def _paste_with_shadow(
+    canvas: Image.Image,
+    obj: Image.Image | None,
+    center_x: int,
+    baseline_y: int,
+    shadow_blur: int = 18,
+    shadow_opacity: int = 90,
+    shadow_dx: int = 10,
+    shadow_dy: int = 12,
+    shadow_expand: int = 60,
+) -> tuple[int | None, int | None]:
+    if obj is None:
+        return None, None
+
+    shadow = _make_shadow_from_alpha(
+        obj,
+        blur=shadow_blur,
+        opacity=shadow_opacity,
+        expand=shadow_expand,
+    )
+
+    obj_x = int(center_x - obj.width / 2)
+    obj_y = int(baseline_y - obj.height)
+
+    shadow_x = obj_x - shadow_expand + shadow_dx
+    shadow_y = obj_y - shadow_expand + shadow_dy
+
+    canvas.alpha_composite(shadow, (shadow_x, shadow_y))
+    canvas.alpha_composite(obj, (obj_x, obj_y))
+
+    return obj_x, obj_y
+
+def _resize_to_width(img: Image.Image | None, target_w: int) -> Image.Image | None:
+    if img is None or target_w <= 0:
+        return img
+    w, h = img.size
+    scale = target_w / max(1, w)
+    return img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+
+def _resize_to_height(img: Image.Image | None, target_h: int) -> Image.Image | None:
+    if img is None or target_h <= 0:
+        return img
+    w, h = img.size
+    scale = target_h / max(1, h)
+    return img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+
+# =========================================================
+# BASE / FUNDO
+# =========================================================
 def _wall_bounds(size: Tuple[int, int]) -> tuple[int, int]:
+    """
+    Mantém a lógica da parede para pintar a cor no mesmo layout do preview.
+    """
     _, h = size
-    y_wall_end = int(h * 0.64)
-    y_baseboard_top = int(h * 0.618)
+    y_wall_end = int(h * 0.66)
+    y_baseboard_top = int(h * 0.64)
     return y_wall_end, y_baseboard_top
 
 
-def _make_soft_light_mask(size: Tuple[int, int], box, blur=80, strength=255) -> Image.Image:
-    m = Image.new("L", size, 0)
-    d = ImageDraw.Draw(m)
-    d.ellipse(box, fill=strength)
-    return m.filter(ImageFilter.GaussianBlur(blur))
-
-
 def _draw_background(size: Tuple[int, int]) -> Image.Image:
-    w, h = size
-    img = Image.new("RGB", size, (228, 224, 218))
-    draw = ImageDraw.Draw(img)
+    """
+    Usa a base PNG se existir.
+    Se não existir, cria um fundo neutro simples como fallback.
+    """
+    base = _safe_open_rgba(ASSET_BASE)
+    if base is not None:
+        return base.resize(size, Image.LANCZOS).convert("RGB")
 
+    w, h = size
     y_wall_end, y_baseboard_top = _wall_bounds(size)
 
-    # ---------------------------------------------------------
-    # PAREDE BASE
-    # ---------------------------------------------------------
-    wall_top = (226, 223, 218)
-    wall_bottom = (214, 210, 204)
+    img = Image.new("RGB", size, (242, 241, 238))
 
+    # parede
     for y in range(y_wall_end):
         t = y / max(1, y_wall_end - 1)
-        cor = _blend_rgb(wall_top, wall_bottom, t)
-        draw.line([0, y, w, y], fill=cor)
+        c = _clamp(244 - t * 10)
+        for x in range(w):
+            img.putpixel((x, y), (c, c, c))
 
-    # luz vindo da esquerda
-    luz_esquerda = _make_soft_light_mask(size, (-260, 20, 620, 700), blur=120, strength=175)
-    img = Image.composite(
-        Image.new("RGB", size, (247, 245, 241)),
-        img,
-        luz_esquerda.point(lambda p: int(p * 0.30)),
-    )
+    # rodapé
+    for y in range(y_baseboard_top, y_wall_end):
+        for x in range(w):
+            img.putpixel((x, y), (236, 236, 236))
 
-    # leve sombra superior
-    sombra_topo = Image.new("L", size, 0)
-    st = ImageDraw.Draw(sombra_topo)
-    st.rectangle([0, 0, w, int(h * 0.16)], fill=95)
-    sombra_topo = sombra_topo.filter(ImageFilter.GaussianBlur(85))
-    img = Image.composite(
-        Image.new("RGB", size, (188, 188, 188)),
-        img,
-        sombra_topo.point(lambda p: int(p * 0.20)),
-    )
-
-    # sombra atrás do sofá
-    sombra_sofa = _make_soft_light_mask(size, (250, 290, 900, 620), blur=80, strength=95)
-    img = Image.composite(
-        Image.new("RGB", size, (178, 176, 173)),
-        img,
-        sombra_sofa.point(lambda p: int(p * 0.18)),
-    )
-
-    # sombra canto direito
-    sombra_direita = _make_soft_light_mask(size, (930, 180, 1330, 620), blur=90, strength=70)
-    img = Image.composite(
-        Image.new("RGB", size, (182, 180, 178)),
-        img,
-        sombra_direita.point(lambda p: int(p * 0.14)),
-    )
-
-    # ---------------------------------------------------------
-    # RODAPÉ
-    # ---------------------------------------------------------
-    draw = ImageDraw.Draw(img)
-    draw.rectangle([0, y_baseboard_top, w, y_wall_end], fill=(240, 238, 234))
-    draw.line([0, y_baseboard_top, w, y_baseboard_top], fill=(208, 204, 198), width=2)
-
-    # ---------------------------------------------------------
-    # PISO
-    # ---------------------------------------------------------
-    floor_top = (198, 180, 160)
-    floor_bottom = (179, 160, 140)
-
+    # piso
     for y in range(y_wall_end, h):
         t = (y - y_wall_end) / max(1, h - y_wall_end)
-        cor = _blend_rgb(floor_top, floor_bottom, t)
-        draw.line([0, y, w, y], fill=cor)
-
-    # paginação sutil do piso
-    for yy in range(y_wall_end + 32, h, 48):
-        draw.line([0, yy, w, yy], fill=(168, 151, 132), width=1)
-
-    # brilho suave no piso
-    brilho = _make_soft_light_mask(size, (80, y_wall_end + 10, 1040, h + 80), blur=90, strength=90)
-    img = Image.composite(
-        Image.new("RGB", size, (214, 200, 184)),
-        img,
-        brilho.point(lambda p: int(p * 0.12)),
-    )
-
-    # sombra geral no piso
-    sombra_piso = Image.new("L", size, 0)
-    sp = ImageDraw.Draw(sombra_piso)
-    sp.rectangle([0, y_wall_end, w, h], fill=30)
-    sp.ellipse([150, y_wall_end + 30, 980, h + 90], fill=46)
-    sp.ellipse([960, y_wall_end + 45, 1200, h + 40], fill=28)
-    sombra_piso = sombra_piso.filter(ImageFilter.GaussianBlur(50))
-    img = Image.composite(
-        Image.new("RGB", size, (126, 111, 96)),
-        img,
-        sombra_piso.point(lambda p: int(p * 0.20)),
-    )
+        r = _clamp(226 - t * 18)
+        g = _clamp(218 - t * 20)
+        b = _clamp(206 - t * 22)
+        for x in range(w):
+            img.putpixel((x, y), (r, g, b))
 
     return img
 
 
-def _foreground_layer(size: Tuple[int, int]) -> Image.Image:
-    w, h = size
-    fg = Image.new("RGBA", size, (0, 0, 0, 0))
-
-    def blur_layer(draw_fn, blur=16):
-        lay = Image.new("RGBA", size, (0, 0, 0, 0))
-        d = ImageDraw.Draw(lay)
-        draw_fn(d)
-        return lay.filter(ImageFilter.GaussianBlur(blur))
-
-    # =========================================================
-    # QUADRO
-    # =========================================================
-    fg = Image.alpha_composite(
-        fg,
-        blur_layer(
-            lambda d: d.rounded_rectangle([900, 118, 1170, 300], radius=8, fill=(0, 0, 0, 48)),
-            blur=14,
-        ),
-    )
-
-    draw = ImageDraw.Draw(fg)
-    draw.rounded_rectangle([886, 104, 1150, 284], radius=5, fill=(242, 240, 235, 255), outline=(120, 114, 108, 255), width=3)
-    draw.rectangle([906, 122, 1130, 264], fill=(218, 214, 208, 255))
-    draw.rectangle([950, 148, 1088, 236], fill=(203, 198, 191, 255))
-    draw.line([964, 164, 1074, 164], fill=(188, 183, 177, 255), width=2)
-    draw.line([964, 222, 1074, 222], fill=(188, 183, 177, 255), width=2)
-
-    brilho_quadro = Image.new("RGBA", size, (0, 0, 0, 0))
-    bq = ImageDraw.Draw(brilho_quadro)
-    bq.polygon([(900, 118), (1010, 118), (955, 282), (900, 282)], fill=(255, 255, 255, 22))
-    brilho_quadro = brilho_quadro.filter(ImageFilter.GaussianBlur(12))
-    fg = Image.alpha_composite(fg, brilho_quadro)
-
-    # =========================================================
-    # LUMINÁRIA
-    # =========================================================
-    draw = ImageDraw.Draw(fg)
-    draw.rectangle([136, 176, 148, 500], fill=(68, 65, 64, 255))
-    draw.ellipse([88, 140, 206, 234], fill=(229, 219, 190, 255), outline=(151, 141, 118, 255), width=3)
-
-    glow = Image.new("RGBA", size, (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.ellipse([72, 124, 226, 252], fill=(255, 244, 215, 16))
-    gd.ellipse([96, 148, 198, 226], fill=(255, 244, 220, 28))
-    glow = glow.filter(ImageFilter.GaussianBlur(18))
-    fg = Image.alpha_composite(fg, glow)
-
-    # =========================================================
-    # TAPETE
-    # =========================================================
-    fg = Image.alpha_composite(
-        fg,
-        blur_layer(
-            lambda d: d.rounded_rectangle([290, 522, 816, 690], radius=86, fill=(0, 0, 0, 34)),
-            blur=32,
-        ),
-    )
-
-    draw = ImageDraw.Draw(fg)
-    draw.rounded_rectangle([316, 532, 790, 664], radius=58, fill=(210, 203, 193, 132))
-
-    # =========================================================
-    # SOFÁ - SOMBRAS
-    # =========================================================
-    fg = Image.alpha_composite(
-        fg,
-        blur_layer(
-            lambda d: d.ellipse([238, 538, 852, 716], fill=(0, 0, 0, 62)),
-            blur=28,
-        ),
-    )
-
-    # =========================================================
-    # SOFÁ - CORPO
-    # =========================================================
-    draw = ImageDraw.Draw(fg)
-    draw.rounded_rectangle([260, 384, 780, 592], radius=34, fill=(214, 208, 202, 255), outline=(150, 145, 138, 255), width=2)
-    draw.rounded_rectangle([222, 438, 306, 580], radius=22, fill=(205, 199, 192, 255), outline=(150, 145, 138, 255), width=2)
-    draw.rounded_rectangle([734, 438, 818, 580], radius=22, fill=(205, 199, 192, 255), outline=(150, 145, 138, 255), width=2)
-
-    draw.rounded_rectangle([304, 426, 736, 534], radius=22, fill=(221, 216, 210, 255))
-    draw.rounded_rectangle([304, 402, 736, 468], radius=20, fill=(227, 223, 217, 255))
-
-    draw.line([408, 428, 408, 538], fill=(176, 169, 162, 255), width=2)
-    draw.line([546, 426, 546, 538], fill=(176, 169, 162, 255), width=2)
-    draw.line([680, 428, 680, 538], fill=(176, 169, 162, 255), width=2)
-
-    # brilho principal do sofá
-    brilho_sofa = Image.new("RGBA", size, (0, 0, 0, 0))
-    bs = ImageDraw.Draw(brilho_sofa)
-    bs.ellipse([320, 392, 740, 510], fill=(255, 255, 255, 26))
-    brilho_sofa = brilho_sofa.filter(ImageFilter.GaussianBlur(20))
-    fg = Image.alpha_composite(fg, brilho_sofa)
-
-    # sombra interna
-    sombra_assento = Image.new("RGBA", size, (0, 0, 0, 0))
-    sa = ImageDraw.Draw(sombra_assento)
-    sa.ellipse([318, 468, 724, 566], fill=(0, 0, 0, 22))
-    sombra_assento = sombra_assento.filter(ImageFilter.GaussianBlur(18))
-    fg = Image.alpha_composite(fg, sombra_assento)
-
-    # almofadas
-    draw = ImageDraw.Draw(fg)
-    draw.rounded_rectangle([350, 432, 426, 510], radius=12, fill=(198, 191, 184, 255))
-    draw.rounded_rectangle([482, 428, 560, 512], radius=12, fill=(183, 190, 198, 255))
-    draw.rounded_rectangle([612, 434, 690, 510], radius=12, fill=(212, 199, 179, 255))
-
-    # =========================================================
-    # MESA
-    # =========================================================
-    fg = Image.alpha_composite(
-        fg,
-        blur_layer(
-            lambda d: d.ellipse([456, 618, 712, 704], fill=(0, 0, 0, 38)),
-            blur=18,
-        ),
-    )
-
-    draw = ImageDraw.Draw(fg)
-    draw.rounded_rectangle([470, 590, 692, 668], radius=14, fill=(112, 84, 61, 255))
-    draw.rectangle([508, 662, 524, 722], fill=(78, 58, 45, 255))
-    draw.rectangle([638, 662, 654, 722], fill=(78, 58, 45, 255))
-
-    brilho_mesa = Image.new("RGBA", size, (0, 0, 0, 0))
-    bm = ImageDraw.Draw(brilho_mesa)
-    bm.rectangle([488, 598, 666, 614], fill=(255, 255, 255, 14))
-    brilho_mesa = brilho_mesa.filter(ImageFilter.GaussianBlur(10))
-    fg = Image.alpha_composite(fg, brilho_mesa)
-
-    # =========================================================
-    # PLANTA / VASO
-    # =========================================================
-    fg = Image.alpha_composite(
-        fg,
-        blur_layer(
-            lambda d: (
-                d.ellipse([1022, 330, 1178, 470], fill=(0, 0, 0, 28)),
-                d.ellipse([1038, 538, 1150, 662], fill=(0, 0, 0, 30))
-            ),
-            blur=18,
-        ),
-    )
-
-    draw = ImageDraw.Draw(fg)
-    draw.ellipse([1060, 486, 1142, 624], fill=(194, 190, 181, 255), outline=(129, 126, 121, 255))
-    draw.ellipse([1074, 498, 1128, 610], fill=(212, 208, 198, 80))
-    draw.rectangle([1094, 380, 1108, 500], fill=(108, 134, 95, 255))
-
-    draw.ellipse([1032, 336, 1128, 416], fill=(118, 146, 101, 255))
-    draw.ellipse([1012, 356, 1104, 438], fill=(104, 131, 91, 255))
-    draw.ellipse([1062, 312, 1168, 404], fill=(130, 158, 111, 255))
-    draw.ellipse([1088, 340, 1176, 430], fill=(141, 169, 121, 255))
-
-    return fg
-
-
+# =========================================================
+# MÁSCARA E PINTURA DA PAREDE
+# =========================================================
 def _wall_mask(size: Tuple[int, int]) -> Image.Image:
+    """
+    Máscara da área pintável da parede.
+    """
     w, h = size
     y_wall_end, _ = _wall_bounds(size)
 
     mask = Image.new("L", size, 0)
-    draw = ImageDraw.Draw(mask)
-    draw.rectangle([0, 0, w, y_wall_end], fill=255)
-    return mask.filter(ImageFilter.GaussianBlur(1))
+    for y in range(y_wall_end):
+        for x in range(w):
+            mask.putpixel((x, y), 255)
+
+    mask = mask.filter(ImageFilter.GaussianBlur(1))
+    return mask
 
 
 def _wall_shading_from_background(bg: Image.Image, mask: Image.Image) -> Image.Image:
+    """
+    Extrai luz/sombra do fundo para preservar realismo ao pintar a parede.
+    """
     gray = bg.convert("L")
-    soft1 = gray.filter(ImageFilter.GaussianBlur(10))
-    soft2 = gray.filter(ImageFilter.GaussianBlur(24))
-    mixed = Image.blend(soft1, soft2, 0.50)
+    blur1 = gray.filter(ImageFilter.GaussianBlur(10))
+    blur2 = gray.filter(ImageFilter.GaussianBlur(24))
+    mixed = Image.blend(blur1, blur2, 0.45)
     shaded = ImageChops.multiply(mixed, mask)
-    return shaded.point(lambda p: max(94, min(255, int(p * 1.02))))
+    shaded = shaded.point(lambda p: max(92, min(255, int(p * 1.03))))
+    return shaded
 
 
 def _paint_wall(background: Image.Image, hex_color: str) -> Image.Image:
@@ -319,32 +253,16 @@ def _paint_wall(background: Image.Image, hex_color: str) -> Image.Image:
     shading = _wall_shading_from_background(background, mask)
 
     solid = Image.new("RGB", background.size, rgb)
-    painted = ImageChops.multiply(solid, shading.convert("RGB"))
+    painted_wall = ImageChops.multiply(solid, shading.convert("RGB"))
 
-    soften = Image.new("RGB", background.size, (238, 238, 238))
-    painted = Image.blend(
-        painted,
-        ImageChops.screen(painted, soften),
-        0.30,
+    brighten = Image.new("RGB", background.size, (236, 236, 236))
+    painted_wall = Image.blend(
+        painted_wall,
+        ImageChops.screen(painted_wall, brighten),
+        0.34,
     )
 
-    return Image.composite(painted, background, mask)
-
-
-def _flatten_base_environment(size: Tuple[int, int]) -> Image.Image:
-    bg = _draw_background(size).convert("RGBA")
-    fg = _foreground_layer(size)
-    return Image.alpha_composite(bg, fg).convert("RGB")
-
-
-def _ensure_base_environment(base_path: Path, size: Tuple[int, int] = (1280, 720)) -> Path:
-    base_path.parent.mkdir(parents=True, exist_ok=True)
-    if base_path.exists():
-        return base_path
-
-    img = _flatten_base_environment(size)
-    img.save(base_path)
-    return base_path
+    return Image.composite(painted_wall, background, mask)
 
 
 def _paint_wall_with_texture(background: Image.Image, texture_path: str | Path) -> Image.Image:
@@ -358,7 +276,7 @@ def _paint_wall_with_texture(background: Image.Image, texture_path: str | Path) 
     texture = texture.crop((x1, y1, x2, y2))
 
     texture = texture.filter(ImageFilter.GaussianBlur(1))
-    texture = texture.resize(background.size)
+    texture = texture.resize(background.size, Image.LANCZOS)
 
     mask = _wall_mask(background.size)
     shading = _wall_shading_from_background(background, mask).convert("RGB")
@@ -375,12 +293,186 @@ def _paint_wall_with_texture(background: Image.Image, texture_path: str | Path) 
     return Image.composite(textured_wall, background, mask)
 
 
+# =========================================================
+# OBJETOS FRONTAIS
+# =========================================================
+def _foreground_layer(size: Tuple[int, int]) -> Image.Image:
+    w, h = size
+    fg = Image.new("RGBA", size, (0, 0, 0, 0))
+
+    # carrega assets brutos
+    sofa_raw = _crop_to_alpha(_safe_open_rgba(ASSET_SOFA), padding=4)
+    mesa_raw = _crop_to_alpha(_safe_open_rgba(ASSET_MESA), padding=3)
+    planta_raw = _crop_to_alpha(_safe_open_rgba(ASSET_PLANTA), padding=3)
+    quadro_raw = _crop_to_alpha(_safe_open_rgba(ASSET_QUADRO), padding=2)
+    luminaria_raw = _crop_to_alpha(_safe_open_rgba(ASSET_LUMINARIA), padding=3)
+
+    # =========================
+    # ESCALA ARQUITETÔNICA
+    # =========================
+    # referência visual da cena:
+    # sofá real = 2,10 m
+    sofa_target_w = 650
+    px_por_metro = sofa_target_w / 2.10
+
+    mesa_target_w = int(0.90 * px_por_metro)       # 0,90 m
+    planta_target_h = int(1.20 * px_por_metro)     # 1,20 m
+    luminaria_target_h = int(1.55 * px_por_metro)  # 1,55 m
+    quadro_target_w = int(1.20 * px_por_metro)     # 0,55 m
+
+    sofa = _resize_to_width(sofa_raw, sofa_target_w)
+    mesa = _resize_to_width(mesa_raw, mesa_target_w)
+    planta = _resize_to_height(planta_raw, planta_target_h)
+    luminaria = _resize_to_height(luminaria_raw, luminaria_target_h)
+    quadro = _resize_to_width(quadro_raw, quadro_target_w)
+
+    y_wall_end, _ = _wall_bounds(size)
+
+    # =========================
+    # BASELINES
+    # =========================
+    sofa_baseline = int(h * 0.79)
+    mesa_baseline = int(h * 0.84)
+    planta_baseline = int(h * 0.80)
+    luminaria_baseline = int(h * 0.80)
+
+    # =========================
+    # SOFÁ
+    # =========================
+    sofa_x = (w - sofa.width) // 2
+    sofa_y = sofa_baseline - sofa.height
+
+    shadow = _make_shadow_from_alpha(sofa, blur=22, opacity=70, expand=26)
+    shadow_x = sofa_x - (shadow.width - sofa.width) // 2
+    shadow_y = sofa_baseline - sofa.height // 6
+    fg.alpha_composite(shadow, (shadow_x, shadow_y))
+    fg.alpha_composite(sofa, (sofa_x, sofa_y))
+
+    # =========================
+    # QUADRO
+    # =========================
+    if quadro is not None:
+        shadow = _make_shadow_from_alpha(quadro, blur=8, opacity=55, expand=18)
+
+        # centro do sofá
+        qx = sofa_x + sofa.width // 2
+
+        # AJUSTE DE ALTURA
+        espacamento = int(-0.5 * px_por_metro)   # ~10 cm
+        qy = sofa_y - quadro.height - espacamento
+
+        shadow_x = qx - shadow.width // 2 + 4
+        shadow_y = qy + 4
+        fg.alpha_composite(shadow, (shadow_x, shadow_y))
+
+        obj_x = qx - quadro.width // 2
+        obj_y = qy
+        fg.alpha_composite(quadro, (obj_x, obj_y))
+
+    # =========================
+    # LUMINÁRIA
+    # =========================
+    _paste_with_shadow(
+        fg,
+        luminaria,
+        center_x=int(w * 0.12),
+        baseline_y=luminaria_baseline,
+        shadow_blur=10,
+        shadow_opacity=55,
+        shadow_dx=4,
+        shadow_dy=6,
+        shadow_expand=20,
+    )
+
+
+    # =========================
+    # MESA
+    # =========================
+    _paste_with_shadow(
+        fg,
+        mesa,
+        center_x=int(w * 0.56),
+        baseline_y=mesa_baseline,
+        shadow_blur=10,
+        shadow_opacity=55,
+        shadow_dx=4,
+        shadow_dy=6,
+        shadow_expand=20,
+    )
+
+    # =========================
+    # PLANTA
+    # =========================
+    _paste_with_shadow(
+        fg,
+        planta,
+        center_x=int(w * 0.89),
+        baseline_y=planta_baseline,
+        shadow_blur=12,
+        shadow_opacity=60,
+        shadow_dx=5,
+        shadow_dy=6,
+        shadow_expand=22,
+    )
+
+    # =========================
+    # SOMBRA SUAVE ATRÁS DO SOFÁ
+    # =========================
+    wall_shadow = Image.new("RGBA", size, (0, 0, 0, 0))
+    mask = Image.new("L", size, 0)
+
+    if sofa is not None:
+        from PIL import ImageDraw
+        d = ImageDraw.Draw(mask)
+        d.ellipse(
+            [
+                int(w * 0.28),
+                int(y_wall_end * 0.78),
+                int(w * 0.74),
+                int(y_wall_end * 1.03),
+            ],
+            fill=24,
+        )
+        mask = mask.filter(ImageFilter.GaussianBlur(26))
+        wall_shadow.putalpha(mask)
+        fg = Image.alpha_composite(wall_shadow, fg)
+
+    return fg
+
+# =========================================================
+# BASE COMPLETA / COMPATIBILIDADE
+# =========================================================
+def _flatten_base_environment(size: Tuple[int, int]) -> Image.Image:
+    bg = _draw_background(size).convert("RGBA")
+    fg = _foreground_layer(size)
+    return Image.alpha_composite(bg, fg).convert("RGB")
+
+
+def _ensure_base_environment(base_path: Path, size: Tuple[int, int] = (1280, 720)) -> Path:
+    """
+    Mantém compatibilidade com seu fluxo atual.
+    """
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+    if base_path.exists():
+        return base_path
+
+    img = _flatten_base_environment(size)
+    img.save(base_path)
+    return base_path
+
+
+# =========================================================
+# RENDER FINAL
+# =========================================================
 def render_color_preview(
     hex_color: str,
     output_path: str | Path,
     base_image_path: str | Path | None = None,
     texture_path: str | Path | None = None,
 ) -> Path:
+    """
+    Mantém a mesma assinatura usada hoje no mixins_pedido.
+    """
     output_path = Path(output_path)
 
     if base_image_path is None:
@@ -408,5 +500,5 @@ def render_color_preview(
 
 if __name__ == "__main__":
     destino = Path.cwd() / "preview_ambiente" / "preview_parede.png"
-    render_color_preview("#B2877E", destino)
+    render_color_preview("#CFA6A6", destino)
     print(f"Preview gerado em: {destino}")

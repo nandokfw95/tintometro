@@ -8,6 +8,8 @@ from PIL import Image, ImageDraw, ImageOps, ImageTk
 from tkinter import messagebox
 from ttkbootstrap.constants import *
 
+import colorsys
+
 from db import (
     listar_cores_tintometrico,
     listar_opcoes_por_cor,
@@ -583,6 +585,517 @@ class PedidoTintasMixin:
             ent_cor.focus_set()
             mostrar_preview(cod_cor=cod, nome_cor=nome)
 
+        def _extrair_cod_cor_do_arquivo_preview(arq: Path):
+            """
+            Converte nome do arquivo em COD_COR.
+            Ex:
+              00YR_26_490.png -> 00YR 26/490
+              0001.png        -> 0001
+            """
+            stem = arq.stem.strip().upper()
+
+            m = re.match(r"^(\d{2}[A-Z]{2})_(\d{2})_(\d{3})$", stem)
+            if m:
+                return f"{m.group(1)} {m.group(2)}/{m.group(3)}"
+
+            return stem.replace("__", "_").replace("_", " ").strip()
+
+        def _cod_cor_valido(cod: str) -> bool:
+            cod = (cod or "").strip().upper()
+            return bool(re.match(r"^\d{2}[A-Z]{2}\s+\d{2}/\d{3}$", cod))
+
+        def _listar_arquivos_preview():
+            if not PASTA_PREVIEW.exists():
+                return []
+
+            exts = {".png", ".jpg", ".jpeg", ".webp"}
+            arquivos = []
+
+            for arq in PASTA_PREVIEW.iterdir():
+                if not arq.is_file():
+                    continue
+                if arq.suffix.lower() not in exts:
+                    continue
+
+                cod = _extrair_cod_cor_do_arquivo_preview(arq)
+
+                # mantém só códigos tintométricos válidos
+                if not _cod_cor_valido(cod):
+                    continue
+
+                arquivos.append(arq)
+
+            def _ord_key(p: Path):
+                cod = _extrair_cod_cor_do_arquivo_preview(p)
+                return cod
+
+            return sorted(arquivos, key=_ord_key)
+        
+        def abrir_paleta_cores():
+            dados = _dados_paleta()
+            if not dados:
+                messagebox.showwarning(
+                    "Atenção",
+                    "Nenhuma cor válida encontrada na pasta de previews."
+                )
+                return
+
+            win_paleta = tb.Toplevel(win)
+            win_paleta.title("Paleta de cores")
+            win_paleta.geometry("1120x760")
+            win_paleta.transient(win)
+            win_paleta.grab_set()
+
+            topo = tb.Frame(win_paleta, padding=10)
+            topo.pack(fill=X)
+
+            tb.Label(
+                topo,
+                text="Paleta de cores",
+                font=("Segoe UI", 12, "bold")
+            ).pack(anchor=W)
+
+            tb.Label(
+                topo,
+                text="Clique em uma cor para selecionar no pedido",
+                font=("Segoe UI", 9)
+            ).pack(anchor=W, pady=(2, 8))
+
+            v_busca_paleta = tk.StringVar()
+
+            linha_busca = tb.Frame(topo)
+            linha_busca.pack(fill=X)
+
+            tb.Label(linha_busca, text="Buscar:").pack(side=LEFT, padx=(0, 6))
+            ent_busca_paleta = tb.Entry(linha_busca, textvariable=v_busca_paleta)
+            ent_busca_paleta.pack(side=LEFT, fill=X, expand=True)
+
+            info_paleta = tb.Label(topo, text="")
+            info_paleta.pack(anchor=W, pady=(8, 0))
+
+            body = tb.Frame(win_paleta, padding=(10, 0, 10, 10))
+            body.pack(fill=BOTH, expand=True)
+
+            canvas_wrap = tb.Frame(body)
+            canvas_wrap.pack(fill=BOTH, expand=True)
+
+            canvas = tk.Canvas(canvas_wrap, bg="white", highlightthickness=0)
+            scroll_y = tb.Scrollbar(canvas_wrap, orient=VERTICAL, command=canvas.yview)
+            scroll_x = tb.Scrollbar(win_paleta, orient=HORIZONTAL, command=canvas.xview)
+
+            canvas.configure(
+                yscrollcommand=scroll_y.set,
+                xscrollcommand=scroll_x.set
+            )
+
+            canvas.pack(side=LEFT, fill=BOTH, expand=True)
+            scroll_y.pack(side=RIGHT, fill=Y)
+            scroll_x.pack(fill=X)
+
+            cell_w = 72
+            cell_h = 54
+            text_h = 18
+            gap = 6
+            cols = 14
+            margem = 14
+
+            itens_render = []
+
+            def selecionar_cor(cod):
+                v_cor.set(cod)
+                _esconder_sugestoes()
+                _carregar_opcoes_por_cor(cod)
+                mostrar_preview(cod_cor=cod, nome_cor=nome_cor_atual)
+                ent_cor.focus_set()
+                _unbind_mousewheel()
+                win_paleta.destroy()
+
+            def renderizar_paleta(*_):
+                canvas.delete("all")
+                itens_render.clear()
+
+                termo = (v_busca_paleta.get() or "").strip().lower()
+
+                filtrados = []
+                for item in dados:
+                    texto = f"{item['cod']} {item['hex']}".lower()
+                    if termo and termo not in texto:
+                        continue
+                    filtrados.append(item)
+
+                info_paleta.config(text=f"{len(filtrados)} cor(es)")
+
+                for i, item in enumerate(filtrados):
+                    row = i // cols
+                    col = i % cols
+
+                    x1 = margem + col * (cell_w + gap)
+                    y1 = margem + row * (cell_h + text_h + gap)
+                    x2 = x1 + cell_w
+                    y2 = y1 + cell_h
+
+                    rect = canvas.create_rectangle(
+                        x1, y1, x2, y2,
+                        fill=item["hex"],
+                        outline="#d0d0d0",
+                        width=1
+                    )
+
+                    txt = canvas.create_text(
+                        (x1 + x2) / 2,
+                        y2 + 10,
+                        text=item["cod"],
+                        font=("Segoe UI", 8, "bold"),
+                        anchor="n"
+                    )
+
+                    itens_render.append((rect, item["cod"]))
+                    itens_render.append((txt, item["cod"]))
+
+                total_rows = max(1, (len(filtrados) + cols - 1) // cols)
+                largura_total = margem * 2 + cols * (cell_w + gap)
+                altura_total = margem * 2 + total_rows * (cell_h + text_h + gap)
+
+                canvas.configure(scrollregion=(0, 0, largura_total, altura_total))
+                canvas.yview_moveto(0)
+
+            def on_canvas_click(event):
+                x = canvas.canvasx(event.x)
+                y = canvas.canvasy(event.y)
+                achados = canvas.find_overlapping(x, y, x, y)
+
+                if not achados:
+                    return
+
+                for iid in reversed(achados):
+                    for obj_id, cod in itens_render:
+                        if obj_id == iid:
+                            selecionar_cor(cod)
+                            return
+
+            def on_mouse_move(event):
+                x = canvas.canvasx(event.x)
+                y = canvas.canvasy(event.y)
+                achados = canvas.find_overlapping(x, y, x, y)
+
+                if not achados:
+                    return
+
+                for iid in reversed(achados):
+                    for obj_id, cod in itens_render:
+                        if obj_id == iid:
+                            info_paleta.config(text=cod)
+                            return
+
+            def _mousewheel(event):
+                if event.delta:
+                    canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+            def _shift_mousewheel(event):
+                if event.delta:
+                    canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+
+            def _linux_mousewheel_up(event):
+                canvas.yview_scroll(-1, "units")
+
+            def _linux_mousewheel_down(event):
+                canvas.yview_scroll(1, "units")
+
+            def _bind_mousewheel(event=None):
+                canvas.bind_all("<MouseWheel>", _mousewheel)
+                canvas.bind_all("<Shift-MouseWheel>", _shift_mousewheel)
+                canvas.bind_all("<Button-4>", _linux_mousewheel_up)
+                canvas.bind_all("<Button-5>", _linux_mousewheel_down)
+
+            def _unbind_mousewheel(event=None):
+                canvas.unbind_all("<MouseWheel>")
+                canvas.unbind_all("<Shift-MouseWheel>")
+                canvas.unbind_all("<Button-4>")
+                canvas.unbind_all("<Button-5>")
+
+            canvas.bind("<Enter>", _bind_mousewheel)
+            canvas.bind("<Leave>", _unbind_mousewheel)
+            canvas.bind("<Button-1>", on_canvas_click)
+            canvas.bind("<Motion>", on_mouse_move)
+            ent_busca_paleta.bind("<KeyRelease>", renderizar_paleta)
+
+            def fechar_janela():
+                _unbind_mousewheel()
+                win_paleta.destroy()
+
+            win_paleta.protocol("WM_DELETE_WINDOW", fechar_janela)
+
+            renderizar_paleta()
+            ent_busca_paleta.focus_set()
+        
+        def _extrair_cod_cor_do_arquivo_preview(arq: Path):
+            stem = arq.stem.strip().upper()
+
+            m = re.match(r"^(\d{2}[A-Z]{2})_(\d{2})_(\d{3})$", stem)
+            if m:
+                return f"{m.group(1)} {m.group(2)}/{m.group(3)}"
+
+            return stem.replace("_", " ").strip()
+
+        def _cod_cor_valido(cod: str) -> bool:
+            cod = (cod or "").strip().upper()
+            return bool(re.match(r"^\d{2}[A-Z]{2}\s+\d{2}/\d{3}$", cod))
+
+        def _listar_arquivos_preview_validos():
+            if not PASTA_PREVIEW.exists():
+                return []
+
+            exts = {".png", ".jpg", ".jpeg", ".webp"}
+            arquivos = []
+
+            for arq in PASTA_PREVIEW.iterdir():
+                if not arq.is_file():
+                    continue
+                if arq.suffix.lower() not in exts:
+                    continue
+
+                cod = _extrair_cod_cor_do_arquivo_preview(arq)
+                if not _cod_cor_valido(cod):
+                    continue
+
+                arquivos.append(arq)
+
+            return arquivos
+
+        def _cor_media_arquivo(arq: Path):
+            try:
+                with Image.open(arq) as img:
+                    img = img.convert("RGB")
+                    img = img.resize((1, 1))
+                    return img.getpixel((0, 0))
+            except Exception:
+                return (176, 176, 176)
+
+        def _rgb_to_hex(rgb):
+            r, g, b = rgb
+            return "#{:02x}{:02x}{:02x}".format(r, g, b)
+
+        def _dados_paleta():
+            dados = []
+
+            for arq in _listar_arquivos_preview_validos():
+                cod = _extrair_cod_cor_do_arquivo_preview(arq)
+                rgb = _cor_media_arquivo(arq)
+
+                r, g, b = [v / 255.0 for v in rgb]
+                h, s, v = colorsys.rgb_to_hsv(r, g, b)
+
+                dados.append({
+                    "arquivo": arq,
+                    "cod": cod,
+                    "rgb": rgb,
+                    "hex": _rgb_to_hex(rgb),
+                    "h": h,
+                    "s": s,
+                    "v": v,
+                })
+
+            # ordena parecido com catálogo:
+            # 1) matiz
+            # 2) mais claros primeiro
+            # 3) mais saturados primeiro
+            dados.sort(key=lambda x: (x["h"], -x["v"], -x["s"], x["cod"]))
+            return dados
+
+        def abrir_tabela_cores():
+            arquivos = _listar_arquivos_preview()
+            if not arquivos:
+                messagebox.showwarning(
+                    "Atenção",
+                    f"Nenhuma imagem encontrada em:\n{PASTA_PREVIEW}"
+                )
+                return
+
+            win_cores = tb.Toplevel(win)
+            win_cores.title("Tabela de cores")
+            win_cores.geometry("980x680")
+            win_cores.transient(win)
+            win_cores.grab_set()
+
+            top = tb.Frame(win_cores, padding=10)
+            top.pack(fill=X)
+
+            tb.Label(
+                top,
+                text="Selecione uma cor pela miniatura",
+                font=("Segoe UI", 11, "bold")
+            ).pack(anchor=W)
+
+            v_busca_cor = tb.StringVar()
+            pagina_atual = {"n": 0}
+            itens_por_pagina = 30
+            thumbs_cache = []
+
+            linha_busca = tb.Frame(top)
+            linha_busca.pack(fill=X, pady=(8, 0))
+
+            tb.Label(linha_busca, text="Buscar:").pack(side=LEFT, padx=(0, 6))
+            ent_busca_cor = tb.Entry(linha_busca, textvariable=v_busca_cor)
+            ent_busca_cor.pack(side=LEFT, fill=X, expand=True)
+
+            linha_nav = tb.Frame(top)
+            linha_nav.pack(fill=X, pady=(8, 0))
+
+            lbl_status_pag = tb.Label(linha_nav, text="")
+            lbl_status_pag.pack(side=RIGHT)
+
+            body = tb.Frame(win_cores, padding=(10, 0, 10, 10))
+            body.pack(fill=BOTH, expand=True)
+
+            canvas = tk.Canvas(body, highlightthickness=0, background="white")
+            scroll = tb.Scrollbar(body, orient=VERTICAL, command=canvas.yview)
+            frame_grid = tb.Frame(canvas)
+
+            frame_grid.bind(
+                "<Configure>",
+                lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+            )
+
+            canvas.create_window((0, 0), window=frame_grid, anchor="nw")
+            canvas.configure(yscrollcommand=scroll.set)
+
+            canvas.pack(side=LEFT, fill=BOTH, expand=True)
+            scroll.pack(side=RIGHT, fill=Y)
+
+            def selecionar_cor_por_arquivo(arq: Path):
+                cod = _extrair_cod_cor_do_arquivo_preview(arq)
+                v_cor.set(cod)
+                _esconder_sugestoes()
+                _carregar_opcoes_por_cor(cod)
+                mostrar_preview(cod_cor=cod, nome_cor=nome_cor_atual)
+                ent_cor.focus_set()
+                win_cores.destroy()
+
+            def _filtrados():
+                termo = (v_busca_cor.get() or "").strip().lower()
+                lista = []
+
+                for arq in arquivos:
+                    cod = _extrair_cod_cor_do_arquivo_preview(arq)
+                    nome_txt = f"{cod} {arq.stem}".lower()
+                    if termo and termo not in nome_txt:
+                        continue
+                    lista.append((arq, cod))
+
+                return lista
+
+            def renderizar_grade():
+                for w in frame_grid.winfo_children():
+                    w.destroy()
+
+                thumbs_cache.clear()
+
+                filtrados = _filtrados()
+                total = len(filtrados)
+
+                if total == 0:
+                    tb.Label(
+                        frame_grid,
+                        text="Nenhuma cor encontrada.",
+                        font=("Segoe UI", 10)
+                    ).grid(row=0, column=0, padx=20, pady=20)
+                    lbl_status_pag.config(text="0 resultado(s)")
+                    return
+
+                total_paginas = max(1, (total + itens_por_pagina - 1) // itens_por_pagina)
+
+                if pagina_atual["n"] >= total_paginas:
+                    pagina_atual["n"] = total_paginas - 1
+                if pagina_atual["n"] < 0:
+                    pagina_atual["n"] = 0
+
+                ini = pagina_atual["n"] * itens_por_pagina
+                fim = ini + itens_por_pagina
+                pagina = filtrados[ini:fim]
+
+                colunas = 5
+
+                for i, (arq, cod) in enumerate(pagina):
+                    row = i // colunas
+                    col = i % colunas
+
+                    card = tb.Frame(frame_grid, padding=8)
+                    card.grid(row=row, column=col, padx=8, pady=8, sticky="n")
+
+                    try:
+                        with Image.open(arq) as img:
+                            img = img.convert("RGB")
+                            img = ImageOps.contain(img, (140, 80))
+                            thumb = ImageTk.PhotoImage(img.copy())
+                    except Exception:
+                        img = _criar_placeholder_preview("Sem imagem", (140, 80))
+                        thumb = ImageTk.PhotoImage(img)
+
+                    thumbs_cache.append(thumb)
+
+                    btn_img = tk.Button(
+                        card,
+                        image=thumb,
+                        relief="solid",
+                        bd=1,
+                        cursor="hand2",
+                        command=lambda a=arq: selecionar_cor_por_arquivo(a)
+                    )
+                    btn_img.pack()
+
+                    tb.Label(
+                        card,
+                        text=cod,
+                        anchor="center",
+                        font=("Segoe UI", 9, "bold"),
+                        wraplength=140,
+                        justify="center"
+                    ).pack(pady=(6, 0))
+
+                lbl_status_pag.config(
+                    text=f"Página {pagina_atual['n'] + 1} de {total_paginas} • {total} cor(es)"
+                )
+                canvas.yview_moveto(0)
+
+            def pagina_anterior():
+                pagina_atual["n"] -= 1
+                renderizar_grade()
+
+            def proxima_pagina():
+                pagina_atual["n"] += 1
+                renderizar_grade()
+
+            tb.Button(
+                linha_nav,
+                text="◀ Anterior",
+                bootstyle=SECONDARY,
+                command=pagina_anterior
+            ).pack(side=LEFT)
+
+            tb.Button(
+                linha_nav,
+                text="Próxima ▶",
+                bootstyle=SECONDARY,
+                command=proxima_pagina
+            ).pack(side=LEFT, padx=(8, 0))
+
+            def ao_buscar(*_):
+                pagina_atual["n"] = 0
+                renderizar_grade()
+
+            ent_busca_cor.bind("<KeyRelease>", ao_buscar)
+
+            def _on_mousewheel(event):
+                try:
+                    canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                except Exception:
+                    pass
+
+            canvas.bind("<MouseWheel>", _on_mousewheel)
+
+            renderizar_grade()
+            ent_busca_cor.focus_set()
+
         # =========================================================
         # AÇÕES
         # =========================================================
@@ -773,6 +1286,20 @@ class PedidoTintasMixin:
             text="❌ Remover selecionado",
             bootstyle=DANGER,
             command=remover_do_pedido,
+        ).pack(side=LEFT, padx=(8, 0))
+
+        tb.Button(
+            filtros_btns,
+            text="🎨 Tabela de cores",
+            bootstyle=INFO,
+            command=abrir_tabela_cores,
+        ).pack(side=LEFT, padx=(8, 0))
+
+        tb.Button(
+            filtros_btns,
+            text="🎨 Paleta de cores",
+            bootstyle=INFO,
+            command=abrir_paleta_cores,
         ).pack(side=LEFT, padx=(8, 0))
 
         tb.Button(
